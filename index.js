@@ -2,26 +2,26 @@
 
 require('dotenv').config();
 
-const express      = require('express');
-const session      = require('express-session');
-const cors         = require('cors');
-const multer       = require('multer');
-const cloudinary   = require('cloudinary').v2;
-const { CloudinaryStorage } = require('multer-storage-cloudinary');
-const fs           = require('fs');
-const path         = require('path');
+const express    = require('express');
+const session    = require('express-session');
+const cors       = require('cors');
+const multer     = require('multer');
+const cloudinary = require('cloudinary').v2;
+const fs         = require('fs');
+const path       = require('path');
+const { Readable } = require('stream');
 
 // ─────────────────────────────────────────────────────────────
 //  Config
 // ─────────────────────────────────────────────────────────────
-const PORT          = process.env.PORT || 3000;
-const ADMIN_USER    = process.env.ADMIN_USERNAME || 'admin';
-const ADMIN_PASS    = process.env.ADMIN_PASSWORD || 'biomedssa2025';
-const STATE_FILE    = process.env.STATE_FILE_PATH || './data/state.json';
-const CLD_FOLDER    = process.env.CLOUDINARY_FOLDER || 'muk-biomedssa';
+const PORT       = process.env.PORT || 3000;
+const ADMIN_USER = process.env.ADMIN_USERNAME || 'admin';
+const ADMIN_PASS = process.env.ADMIN_PASSWORD || 'biomedssa2025';
+const STATE_FILE = process.env.STATE_FILE_PATH || './data/state.json';
+const CLD_FOLDER = process.env.CLOUDINARY_FOLDER || 'muk-biomedssa';
 
 // ─────────────────────────────────────────────────────────────
-//  Cloudinary
+//  Cloudinary v2  (no multer-storage-cloudinary needed)
 // ─────────────────────────────────────────────────────────────
 cloudinary.config({
   cloud_name : process.env.CLOUDINARY_CLOUD_NAME,
@@ -29,29 +29,32 @@ cloudinary.config({
   api_secret : process.env.CLOUDINARY_API_SECRET,
 });
 
-// Multer storage – images go straight to Cloudinary
-const storage = new CloudinaryStorage({
-  cloudinary,
-  params: async (req, file) => {
-    // Build a descriptive public_id from the upload context
-    const context  = req.body.context || 'misc';          // e.g. logo, hero, product.0, highlight.2
-    const ts       = Date.now();
-    const publicId = `${CLD_FOLDER}/${context}_${ts}`;
+// Upload a Buffer to Cloudinary using upload_stream
+function uploadToCloudinary(buffer, context) {
+  return new Promise((resolve, reject) => {
+    const publicId = `${CLD_FOLDER}/${context}_${Date.now()}`;
+    const stream = cloudinary.uploader.upload_stream(
+      {
+        folder        : CLD_FOLDER,
+        public_id     : publicId,
+        resource_type : 'image',
+        transformation: [{ quality: 'auto', fetch_format: 'auto' }],
+      },
+      (error, result) => {
+        if (error) return reject(error);
+        resolve({ url: result.secure_url, publicId: result.public_id });
+      }
+    );
+    Readable.from(buffer).pipe(stream);
+  });
+}
 
-    return {
-      folder        : CLD_FOLDER,
-      public_id     : publicId,
-      resource_type : 'image',
-      // Cloudinary will auto-detect format from the file
-      format        : undefined,
-      transformation: [{ quality: 'auto', fetch_format: 'auto' }],
-    };
-  },
-});
-
+// ─────────────────────────────────────────────────────────────
+//  Multer – memory storage, buffer sent to Cloudinary
+// ─────────────────────────────────────────────────────────────
 const upload = multer({
-  storage,
-  limits: { fileSize: 10 * 1024 * 1024 }, // 10 MB max
+  storage: multer.memoryStorage(),
+  limits : { fileSize: 10 * 1024 * 1024 },
   fileFilter: (_req, file, cb) => {
     const allowed = ['image/jpeg', 'image/png', 'image/webp', 'image/gif', 'image/svg+xml'];
     if (allowed.includes(file.mimetype)) cb(null, true);
@@ -60,23 +63,18 @@ const upload = multer({
 });
 
 // ─────────────────────────────────────────────────────────────
-//  State helpers  (JSON file on disk)
+//  State helpers (JSON file on disk)
 // ─────────────────────────────────────────────────────────────
 function ensureDataDir() {
   const dir = path.dirname(path.resolve(STATE_FILE));
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 }
-
 function readState() {
   ensureDataDir();
   if (!fs.existsSync(STATE_FILE)) return {};
-  try {
-    return JSON.parse(fs.readFileSync(STATE_FILE, 'utf8'));
-  } catch {
-    return {};
-  }
+  try { return JSON.parse(fs.readFileSync(STATE_FILE, 'utf8')); }
+  catch { return {}; }
 }
-
 function writeState(data) {
   ensureDataDir();
   fs.writeFileSync(STATE_FILE, JSON.stringify(data, null, 2), 'utf8');
@@ -87,7 +85,7 @@ function writeState(data) {
 // ─────────────────────────────────────────────────────────────
 const app = express();
 
-app.use(cors());
+app.use(cors({ origin: true, credentials: true }));
 app.use(express.json({ limit: '5mb' }));
 app.use(express.urlencoded({ extended: true }));
 
@@ -95,16 +93,14 @@ app.use(session({
   secret           : process.env.SESSION_SECRET || 'dev-secret-change-me',
   resave           : false,
   saveUninitialized: false,
-  cookie           : {
+  cookie: {
     httpOnly: true,
-    sameSite: 'lax',
-    // Set secure:true in production (requires HTTPS)
+    sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
     secure  : process.env.NODE_ENV === 'production',
-    maxAge  : 8 * 60 * 60 * 1000,   // 8 hours
+    maxAge  : 8 * 60 * 60 * 1000,
   },
 }));
 
-// Serve static HTML files
 app.use(express.static(path.join(__dirname, 'public')));
 
 // ─────────────────────────────────────────────────────────────
@@ -118,8 +114,6 @@ function requireAdmin(req, res, next) {
 // ─────────────────────────────────────────────────────────────
 //  Auth Routes
 // ─────────────────────────────────────────────────────────────
-
-// POST /api/auth/login
 app.post('/api/auth/login', (req, res) => {
   const { username, password } = req.body;
   if (username === ADMIN_USER && password === ADMIN_PASS) {
@@ -130,26 +124,21 @@ app.post('/api/auth/login', (req, res) => {
   }
 });
 
-// POST /api/auth/logout
 app.post('/api/auth/logout', (req, res) => {
   req.session.destroy(() => res.json({ ok: true }));
 });
 
-// GET /api/auth/status
 app.get('/api/auth/status', (req, res) => {
   res.json({ isAdmin: !!(req.session && req.session.isAdmin) });
 });
 
 // ─────────────────────────────────────────────────────────────
-//  State Routes  (text/JSON content)
+//  State Routes
 // ─────────────────────────────────────────────────────────────
-
-// GET /api/state  – public: main site reads this on load
 app.get('/api/state', (_req, res) => {
   res.json(readState());
 });
 
-// PUT /api/state  – admin only: saves the full state object
 app.put('/api/state', requireAdmin, (req, res) => {
   try {
     const incoming = req.body;
@@ -164,52 +153,21 @@ app.put('/api/state', requireAdmin, (req, res) => {
   }
 });
 
-// PATCH /api/state  – admin only: merge-update a subset of state keys
-app.patch('/api/state', requireAdmin, (req, res) => {
+// ─────────────────────────────────────────────────────────────
+//  Image Upload (Cloudinary v2 via upload_stream)
+// ─────────────────────────────────────────────────────────────
+app.post('/api/upload', requireAdmin, upload.single('image'), async (req, res) => {
+  if (!req.file) return res.status(400).json({ error: 'No image file received.' });
   try {
-    const current = readState();
-    const patch    = req.body;
-    const merged   = deepMerge(current, patch);
-    writeState(merged);
-    res.json({ ok: true, state: merged });
+    const context = (req.body.context || 'misc').replace(/[^a-zA-Z0-9._-]/g, '_');
+    const result  = await uploadToCloudinary(req.file.buffer, context);
+    res.json({ ok: true, url: result.url, publicId: result.publicId, context });
   } catch (err) {
-    console.error('patchState error:', err);
-    res.status(500).json({ error: 'Failed to patch state.' });
+    console.error('Cloudinary upload error:', err);
+    res.status(500).json({ error: 'Image upload failed: ' + err.message });
   }
 });
 
-// ─────────────────────────────────────────────────────────────
-//  Image Upload Routes  (Cloudinary)
-// ─────────────────────────────────────────────────────────────
-
-/**
- * POST /api/upload
- * Field: image  (multipart/form-data)
- * Body:  context  – string describing where this image belongs
- *                   e.g. "logo", "hero.bg", "product.0", "product.0.pm.1",
- *                        "highlight.2", "mem.provider.0", "exec.3"
- *
- * Returns: { url, publicId, context }
- *   url      – the Cloudinary HTTPS URL to store in state
- *   publicId – Cloudinary public_id (needed for future deletion)
- */
-app.post('/api/upload', requireAdmin, upload.single('image'), (req, res) => {
-  if (!req.file) {
-    return res.status(400).json({ error: 'No image file received.' });
-  }
-  res.json({
-    ok      : true,
-    url     : req.file.path,          // Cloudinary URL
-    publicId: req.file.filename,      // Cloudinary public_id
-    context : req.body.context || '',
-  });
-});
-
-/**
- * DELETE /api/upload/:publicId
- * Removes an image from Cloudinary by its public_id.
- * Pass the publicId URL-encoded if it contains slashes.
- */
 app.delete('/api/upload/:publicId(*)', requireAdmin, async (req, res) => {
   const publicId = req.params.publicId;
   if (!publicId) return res.status(400).json({ error: 'publicId is required.' });
@@ -218,20 +176,14 @@ app.delete('/api/upload/:publicId(*)', requireAdmin, async (req, res) => {
     res.json({ ok: true, result });
   } catch (err) {
     console.error('Cloudinary delete error:', err);
-    res.status(500).json({ error: 'Failed to delete image from Cloudinary.' });
+    res.status(500).json({ error: 'Failed to delete image.' });
   }
 });
 
-/**
- * GET /api/images
- * Returns all images in the Cloudinary folder (for admin gallery / cleanup).
- */
 app.get('/api/images', requireAdmin, async (_req, res) => {
   try {
     const result = await cloudinary.api.resources({
-      type      : 'upload',
-      prefix    : CLD_FOLDER + '/',
-      max_results: 200,
+      type: 'upload', prefix: CLD_FOLDER + '/', max_results: 200,
     });
     res.json({ ok: true, images: result.resources });
   } catch (err) {
@@ -243,8 +195,6 @@ app.get('/api/images', requireAdmin, async (_req, res) => {
 // ─────────────────────────────────────────────────────────────
 //  Contact Submissions
 // ─────────────────────────────────────────────────────────────
-
-// POST /api/contact  – public: submitted by the contact form
 app.post('/api/contact', (req, res) => {
   const { name, email, message } = req.body;
   if (!name || !email || !message) {
@@ -254,20 +204,17 @@ app.post('/api/contact', (req, res) => {
     const state = readState();
     if (!Array.isArray(state.submissions)) state.submissions = [];
     state.submissions.push({
-      name,
-      email,
-      message,
-      date: new Date().toISOString(),
+      name, email, message,
+      date: new Date().toLocaleString('en-UG', { dateStyle: 'medium', timeStyle: 'short' }),
     });
     writeState(state);
     res.json({ ok: true });
   } catch (err) {
-    console.error('contact submission error:', err);
+    console.error('contact error:', err);
     res.status(500).json({ error: 'Failed to save submission.' });
   }
 });
 
-// GET /api/contact  – admin only: list all submissions
 app.get('/api/contact', requireAdmin, (_req, res) => {
   const state = readState();
   res.json({ ok: true, submissions: state.submissions || [] });
@@ -277,36 +224,19 @@ app.get('/api/contact', requireAdmin, (_req, res) => {
 //  Health check
 // ─────────────────────────────────────────────────────────────
 app.get('/api/health', (_req, res) => {
-  res.json({ ok: true, env: process.env.NODE_ENV || 'development' });
+  res.json({
+    ok        : true,
+    env       : process.env.NODE_ENV || 'development',
+    cloudinary: !!process.env.CLOUDINARY_CLOUD_NAME,
+  });
 });
 
 // ─────────────────────────────────────────────────────────────
-//  Fallback – serve index.html for client-side routing
+//  Fallback – serve index.html
 // ─────────────────────────────────────────────────────────────
 app.get('*', (_req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
-
-// ─────────────────────────────────────────────────────────────
-//  Helpers
-// ─────────────────────────────────────────────────────────────
-function deepMerge(target, source) {
-  const output = { ...target };
-  if (isObject(target) && isObject(source)) {
-    Object.keys(source).forEach(key => {
-      if (isObject(source[key])) {
-        if (!(key in target)) output[key] = source[key];
-        else output[key] = deepMerge(target[key], source[key]);
-      } else {
-        output[key] = source[key];
-      }
-    });
-  }
-  return output;
-}
-function isObject(item) {
-  return item && typeof item === 'object' && !Array.isArray(item);
-}
 
 // ─────────────────────────────────────────────────────────────
 //  Start
@@ -317,9 +247,9 @@ app.listen(PORT, () => {
   ║   MUK-BIOMEDSSA Server                  ║
   ║   http://localhost:${PORT}                  ║
   ╚══════════════════════════════════════════╝
-  ENV   : ${process.env.NODE_ENV || 'development'}
-  State : ${path.resolve(STATE_FILE)}
-  CDN   : ${process.env.CLOUDINARY_CLOUD_NAME || '(not configured)'}
+  ENV       : ${process.env.NODE_ENV || 'development'}
+  State     : ${path.resolve(STATE_FILE)}
+  Cloudinary: ${process.env.CLOUDINARY_CLOUD_NAME || '⚠ NOT CONFIGURED'}
   `);
 });
 
