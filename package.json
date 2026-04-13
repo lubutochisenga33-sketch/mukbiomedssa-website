@@ -1,7 +1,7 @@
 {
   "name": "muk-biomedssa",
   "version": "1.0.0",
-  "description": "MUK-BIOMEDSSA – Makerere University Biomedical Sciences Students Association website and CMS",
+  "description": "MUK-BIOMEDSSA – Mukuba University Biomedical Sciences Students Association website and CMS",
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
@@ -24,8 +24,7 @@
     "dotenv": "^16.4.5",
     "express": "^4.19.2",
     "express-session": "^1.18.0",
-    "multer": "^1.4.5-lts.1",
-    "multer-storage-cloudinary": "^4.0.0"
+    "multer": "^1.4.5-lts.1"
   },
   "devDependencies": {
     "nodemon": "^3.1.4"
