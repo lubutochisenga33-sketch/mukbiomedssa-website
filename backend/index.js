@@ -43,17 +43,24 @@ async function loadStateFromCloudinary() {
     console.log('Loading state from Cloudinary...');
     const resource = await cloudinary.api.resource(STATE_ID, { resource_type: 'raw' });
     const https = require('https');
+    // Add cache-buster query param so Cloudinary CDN always returns the latest version
+    const urlWithBust = resource.secure_url + '?t=' + Date.now();
     const json = await new Promise((resolve, reject) => {
-      https.get(resource.secure_url, res => {
+      https.get(urlWithBust, res => {
         let data = '';
         res.on('data', chunk => data += chunk);
         res.on('end', () => resolve(data));
       }).on('error', reject);
     });
     siteState = JSON.parse(json);
-    console.log('✅ State loaded from Cloudinary');
+    const keys = Object.keys(siteState).length;
+    console.log('✅ State loaded from Cloudinary –', keys, 'top-level keys');
   } catch (err) {
-    console.log('ℹ️  No existing state found, starting fresh');
+    if (err.http_code === 404) {
+      console.log('ℹ️  No existing state in Cloudinary – starting fresh');
+    } else {
+      console.error('⚠️  Load error:', err.message, '– starting with empty state');
+    }
     siteState = {};
   }
 }
@@ -63,7 +70,12 @@ async function saveStateToCloudinary() {
     const json = JSON.stringify({ ...siteState, lastUpdated: new Date().toISOString() }, null, 2);
     await new Promise((resolve, reject) => {
       cloudinary.uploader.upload_stream(
-        { resource_type: 'raw', public_id: STATE_ID, overwrite: true, invalidate: true },
+        {
+          resource_type: 'raw',
+          public_id     : STATE_ID,
+          overwrite     : true,
+          invalidate    : true,   // bust Cloudinary CDN cache immediately
+        },
         (err, result) => { if (err) reject(err); else resolve(result); }
       ).end(Buffer.from(json));
     });
@@ -76,7 +88,8 @@ async function saveStateToCloudinary() {
 }
 
 // Auto-save every 10 seconds (same as eBudget)
-setInterval(() => saveStateToCloudinary(), 10000);
+// Auto-save every 30s as backup (PUT /api/state saves immediately)
+setInterval(() => saveStateToCloudinary(), 30000);
 
 // ─────────────────────────────────────────────────────────────
 //  Multer – memory storage → Cloudinary upload_stream
