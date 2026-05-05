@@ -118,14 +118,36 @@ function uploadImageToCloudinary(buffer, context) {
 //  Middleware
 // ─────────────────────────────────────────────────────────────
 app.use(cors({
-  origin: [
-    'https://mukbiomedssa-website.onrender.com',
-    'http://localhost:3000',
-    'null',   // allows file:// origins (opening HTML directly)
-  ],
+  origin: function (origin, callback) {
+    // Allow requests with no origin (mobile apps, curl, Postman, file://)
+    if (!origin) return callback(null, true);
+
+    const allowed = [
+      // ── Render backend itself ──────────────────────────────
+      'https://mukbiomedssa-website.onrender.com',
+      // ── Local development ──────────────────────────────────
+      'http://localhost:3000',
+      'http://localhost:5500',
+      'http://127.0.0.1:5500',
+    ];
+
+    // Allow ANY netlify.app subdomain (covers preview deploys too)
+    const isNetlify = /^https:\/\/[a-z0-9-]+\.netlify\.app$/.test(origin);
+
+    if (allowed.includes(origin) || isNetlify) {
+      return callback(null, true);
+    }
+
+    // Block everything else
+    return callback(new Error('CORS: origin not allowed – ' + origin));
+  },
   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'admin-username', 'admin-password'],
+  credentials: true,
 }));
+
+// Ensure preflight OPTIONS requests are handled for all routes
+app.options('*', cors());
 
 app.use(express.json({ limit: '5mb' }));
 app.use(express.urlencoded({ extended: true }));
