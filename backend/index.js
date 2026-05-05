@@ -120,7 +120,8 @@ function uploadImageToCloudinary(buffer, context) {
 app.use(cors({
   origin: function (origin, callback) {
     // Allow requests with no origin (mobile apps, curl, Postman, file://)
-    if (!origin) return callback(null, true);
+    // Also allow 'null' string origin — sent by Android WebView / Capacitor APK
+    if (!origin || origin === 'null') return callback(null, true);
 
     const allowed = [
       // ── Render backend itself ──────────────────────────────
